@@ -297,9 +297,15 @@ def _aba_condicoes(wb, fc_path, cmv_path, estoque_path, mes_display, ano=2026):
             fc_col = max(valid_cols) if valid_cols else None
         prazo_medio = 0
         if fc_col is not None:
-            # Buscar linha "Prazo Médio de Estoque" dinamicamente
-            _col_d = df_fc.iloc[:, 3].apply(lambda x: str(x).strip().lower() if pd.notna(x) else "")
-            _row_prazo = next((i for i,v in enumerate(_col_d) if "prazo" in v and "estoque" in v), 32)
+            # Buscar linha "Prazo Médio de Estoque" nas colunas C e D (índices 2 e 3)
+            _row_prazo = None
+            for _ci in [2, 3]:
+                _col = df_fc.iloc[:, _ci].apply(lambda x: str(x).strip().lower() if pd.notna(x) else "")
+                _row_prazo = next((i for i,v in enumerate(_col) if "prazo" in v and "estoque" in v), None)
+                if _row_prazo is not None:
+                    break
+            if _row_prazo is None:
+                _row_prazo = 32  # fallback
             val = df_fc.iloc[_row_prazo, fc_col]
             prazo_medio = round(float(val)) if pd.notna(val) else 0
     except Exception as _e:
