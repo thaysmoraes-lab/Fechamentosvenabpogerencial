@@ -587,7 +587,7 @@ def run_streamlit():
                         unsafe_allow_html=True)
             cmv_csv_file = st.file_uploader("CMV CSV", type=["csv"],
                                              label_visibility="collapsed", key="cmv_csv")
-        if atualizar_cmv or atualizar_fc:
+        if atualizar_cmv or atualizar_fc or lanc_vendas:
             st.markdown('<div class="upload-card"><h4>🛒 Faturamento VD (.xlsx)</h4></div>',
                         unsafe_allow_html=True)
             pedidos_file = st.file_uploader("Faturamento VD", type=["xlsx"],
@@ -609,7 +609,7 @@ def run_streamlit():
                         unsafe_allow_html=True)
             nf_file = st.file_uploader("NF Compras", type=["csv"],
                                         label_visibility="collapsed", key="nf")
-        if atualizar_cmv or atualizar_fc:
+        if atualizar_cmv or atualizar_fc or lanc_vendas:
             st.markdown('<div class="upload-card"><h4>💰 Faturamento Loja — GerencialVendas (CSV)</h4></div>',
                         unsafe_allow_html=True)
             fat_file = st.file_uploader("Faturamento", type=["csv"],
