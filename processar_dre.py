@@ -1,0 +1,261 @@
+"""
+processar_dre.py
+Módulo responsável por atualizar os arquivos ValoresDaDRE com lançamentos manuais.
+Cada função recebe o caminho do arquivo ValoresDaDRE e os dados necessários.
+"""
+import pandas as pd
+from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
+import re
+import io
+
+
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+def _br_to_float(val):
+    """Converte valor brasileiro '1.234,56' para float."""
+    if pd.isna(val):
+        return 0.0
+    s = str(val).strip().replace("R$", "").replace(" ", "")
+    if not s or s == "-":
+        return 0.0
+    s = s.replace(".", "").replace(",", ".")
+    try:
+        return float(s)
+    except ValueError:
+        return 0.0
+
+
+def _extrair_codigo(texto):
+    """Extrai o código numérico do início de uma string como '5546 - SMI - Loja'."""
+    if pd.isna(texto):
+        return None
+    m = re.match(r"^\s*(\d+)", str(texto))
+    return m.group(1).strip() if m else None
+
+
+def _mes_para_data(mes_display, ano=2026):
+    """
+    Converte 'Março' → datetime(2026, 3, 1)
+    Retorna objeto datetime.date com o primeiro dia do mês.
+    """
+    MESES = {
+        "Janeiro": 1, "Fevereiro": 2, "Março": 3, "Abril": 4,
+        "Maio": 5, "Junho": 6, "Julho": 7, "Agosto": 8,
+        "Setembro": 9, "Outubro": 10, "Novembro": 11, "Dezembro": 12
+    }
+    from datetime import date
+    num = MESES.get(mes_display, 1)
+    return date(ano, num, 1)
+
+
+def _carregar_fat_lojas(fat_path):
+    """
+    Carrega o GerencialVendas CSV e retorna dict {cod_loja: valor_receita_liquida_trocas}.
+    Coluna F (índice 5) = Receita Líquida (-) Trocas.
+    """
+    df = pd.read_csv(fat_path, sep=None, engine="python", encoding="latin1")
+    col_loja = df.columns[0]
+    df["_cod"] = df[col_loja].astype(str).str.extract(r"^(\d+)")[0].str.strip()
+    df["_val"] = df.iloc[:, 5].apply(_br_to_float)
+    return dict(zip(df["_cod"], df["_val"]))
+
+
+def _carregar_fat_vd(vd_path):
+    """
+    Carrega o ConsultaPedidos XLSX e retorna dict {cod_loja: soma_ValorPedido}.
+    Código extraído de EstruturaPai.
+    """
+    df = pd.read_excel(vd_path)
+    df["_cod"] = df["EstruturaPai"].astype(str).str.extract(r"^(\d+)")[0].str.strip()
+    soma = df.groupby("_cod")["ValorPedido"].sum()
+    return soma.to_dict()
+
+
+def _identificar_canal_cmv(cmv_path):
+    """
+    Lê o CMV mestre e retorna dois sets: {codigos_vd}, {codigos_loja}.
+    Busca abas com nome contendo 'VD' ou 'VENDA' e 'LOJA'.
+    """
+    wb = load_workbook(cmv_path, read_only=True, data_only=True)
+    nomes = wb.sheetnames
+
+    # Encontrar aba VD
+    aba_vd = None
+    for n in nomes:
+        if re.search(r"venda\s*direta|^vd$", n, re.IGNORECASE):
+            aba_vd = n
+            break
+
+    # Encontrar aba LOJAS
+    aba_lojas = None
+    for n in nomes:
+        if re.search(r"loja", n, re.IGNORECASE) and n != aba_vd:
+            aba_lojas = n
+            break
+
+    codigos_vd    = set()
+    codigos_loja  = set()
+
+    def _extrair_codigos_aba(ws):
+        cods = set()
+        for row in ws.iter_rows(min_row=1, values_only=True):
+            for cell in row:
+                m = re.match(r"^\s*(\d{4,6})\b", str(cell or ""))
+                if m:
+                    cods.add(m.group(1))
+            break  # só primeira linha com dados relevantes? Na verdade vamos varrer tudo
+        # Varrer coluna A
+        for row in ws.iter_rows(min_col=1, max_col=2, values_only=True):
+            for cell in row:
+                m = re.match(r"^\s*(\d{4,6})\b", str(cell or ""))
+                if m:
+                    cods.add(m.group(1))
+        return cods
+
+    if aba_vd:
+        ws = wb[aba_vd]
+        codigos_vd = _extrair_codigos_aba(ws)
+    if aba_lojas:
+        ws = wb[aba_lojas]
+        codigos_loja = _extrair_codigos_aba(ws)
+
+    wb.close()
+    return codigos_vd, codigos_loja
+
+
+def _abrir_dre(dre_path):
+    """Carrega o ValoresDaDRE e retorna (wb, ws, df_preview)."""
+    wb = load_workbook(dre_path)
+    ws = wb.active
+    return wb, ws
+
+
+def _encontrar_header_row(ws):
+    """Encontra a linha de cabeçalho no ValoresDaDRE (contém 'Competência' e 'Valor')."""
+    for i, row in enumerate(ws.iter_rows(values_only=True), start=1):
+        vals = [str(c or "").strip().lower() for c in row]
+        if "competência" in vals or "competencia" in vals:
+            return i
+    return 5  # fallback linha 5
+
+
+def _get_col_indices(ws, header_row):
+    """
+    Retorna dict com índices das colunas importantes.
+    Colunas: A=Descrição, B=Empresa, C=Centro de Custo, D=Competência, E=Valor
+    """
+    row_vals = list(ws.iter_rows(min_row=header_row, max_row=header_row, values_only=True))[0]
+    cols = {}
+    for i, v in enumerate(row_vals, start=1):
+        n = str(v or "").strip().lower()
+        if "descrição" in n or "descricao" in n:
+            cols["descricao"] = i
+        elif "empresa" in n:
+            cols["empresa"] = i
+        elif "centro" in n:
+            cols["centro"] = i
+        elif "competência" in n or "competencia" in n:
+            cols["competencia"] = i
+        elif "valor" in n:
+            cols["valor"] = i
+    # fallback padrão
+    cols.setdefault("descricao", 1)
+    cols.setdefault("empresa",   2)
+    cols.setdefault("centro",    3)
+    cols.setdefault("competencia", 4)
+    cols.setdefault("valor",     5)
+    return cols
+
+
+# ── Função principal: Vendas de Mercadorias ───────────────────────────────────
+
+def atualizar_vendas_mercadorias(
+    dre_path: str,
+    fat_lojas_path: str,
+    fat_vd_path: str,
+    cmv_path: str,
+    mes_display: str,
+    ano: int = 2026,
+    output_path: str = None
+) -> dict:
+    """
+    Atualiza o ValoresDaDRE de Vendas de Mercadorias:
+      - Col D (Competência) = primeiro dia do mês selecionado
+      - Col E (Valor)       = Receita Líquida (Loja) ou soma ValorPedido (VD)
+                              identificado pelo código numérico da Col C
+
+    Retorna dict com relatório: lojas atualizadas, não encontradas, erros.
+    """
+    data_competencia = _mes_para_data(mes_display, ano)
+
+    # Carregar valores das bases
+    map_lojas = _carregar_fat_lojas(fat_lojas_path)   # {cod: valor}
+    map_vd    = _carregar_fat_vd(fat_vd_path)         # {cod: valor}
+
+    # Identificar canal de cada loja via CMV
+    codigos_vd, codigos_loja = _identificar_canal_cmv(cmv_path)
+
+    # Combinar: VD tem prioridade se o código aparecer lá
+    # map_vd já tem os valores corretos para VD
+    # map_lojas tem os valores para LOJA
+
+    # Abrir DRE
+    wb, ws = _abrir_dre(dre_path)
+    header_row = _encontrar_header_row(ws)
+    cols = _get_col_indices(ws, header_row)
+
+    relatorio = {
+        "atualizadas": [],
+        "nao_encontradas": [],  # código no DRE mas sem valor nas bases
+        "sem_codigo": [],       # linha no DRE sem código identificável
+    }
+
+    # Iterar linhas de dados (após cabeçalho)
+    for row_idx in range(header_row + 1, ws.max_row + 1):
+        centro_val = ws.cell(row=row_idx, column=cols["centro"]).value
+        if not centro_val:
+            continue
+
+        cod = _extrair_codigo(str(centro_val))
+        if not cod:
+            relatorio["sem_codigo"].append(str(centro_val))
+            continue
+
+        # Determinar canal e valor
+        valor = None
+        canal = None
+
+        if cod in codigos_vd:
+            canal = "VD"
+            valor = map_vd.get(cod)
+        elif cod in codigos_loja:
+            canal = "Loja"
+            valor = map_lojas.get(cod)
+        else:
+            # Tentar nas duas bases
+            if cod in map_vd:
+                canal = "VD"
+                valor = map_vd[cod]
+            elif cod in map_lojas:
+                canal = "Loja"
+                valor = map_lojas[cod]
+
+        if valor is None:
+            relatorio["nao_encontradas"].append(f"{cod} (centro: {centro_val})")
+            continue
+
+        # Gravar Competência (col D) e Valor (col E)
+        ws.cell(row=row_idx, column=cols["competencia"]).value = data_competencia
+        ws.cell(row=row_idx, column=cols["valor"]).value       = round(valor, 2)
+
+        relatorio["atualizadas"].append(
+            f"{cod} ({canal}) → R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        )
+
+    # Salvar
+    out = output_path or dre_path
+    wb.save(out)
+    wb.close()
+
+    return relatorio
