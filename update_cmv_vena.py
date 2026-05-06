@@ -623,11 +623,11 @@ def run_streamlit():
     if (atualizar_fc or atualizar_dfc) and not fc_mestre: erros.append("FC Consolidado")
     if (atualizar_estoque or atualizar_fc) and not posicao_file:  erros.append("Posição de Estoque")
     if (atualizar_estoque or atualizar_fc) and not nf_file:       erros.append("NF Compras")
-    if (atualizar_cmv or atualizar_estoque) and not cmv_csv_file: erros.append("CMV Gerencial CSV")
+    if (atualizar_cmv or atualizar_estoque or atualizar_fc) and not cmv_csv_file: erros.append("CMV Gerencial CSV")
     if (atualizar_cmv or atualizar_fc) and not fat_file:          erros.append("Faturamento")
-    if (atualizar_cmv or atualizar_fc) and not pedidos_file:      erros.append("Consulta Pedidos")
-    if atualizar_fc and not rateio_file:   erros.append("Rateio de Títulos")
-    if atualizar_fc and not cartoes_files: erros.append("Parcelas de Cartões")
+    if (atualizar_cmv or atualizar_fc) and not pedidos_file:      erros.append("Faturamento VD")
+    if atualizar_fc and not rateio_file:   erros.append("Contas a Pagar")
+    if atualizar_fc and not cartoes_files: erros.append("Contas a Receber")
 
     if erros: st.info(f"📎 Pendentes: **{', '.join(erros)}**")
     else:      st.success(f"✅ Todos os arquivos prontos para processar **{mes_display}**.")
@@ -820,14 +820,22 @@ def run_streamlit():
                         if not _fc_v2 or not os.path.exists(_fc_v2):
                             raise ValueError("FC Consolidado não pôde ser lido — tente recarregar o arquivo")
                         mp = _fc_v2
-                        # Garantir que todos os paths existem antes de chamar
-                        _pos  = paths.get("pos")  or (save_tmp(posicao_file,  "pos2.csv")  if posicao_file  else None)
-                        _nf   = paths.get("nf")   or (save_tmp(nf_file,       "nf2.csv")   if nf_file       else None)
-                        _csv  = paths.get("cmv_csv") or (save_tmp(cmv_csv_file,"cmv2.csv") if cmv_csv_file  else None)
-                        _fat  = paths.get("fat")  or (save_tmp(fat_file,      "fat2.csv")  if fat_file      else None)
-                        _ped  = paths.get("ped")  or (save_tmp(pedidos_file,  "ped2.xlsx") if pedidos_file  else None)
-                        _rat  = paths.get("rat")  or (save_tmp(rateio_file,   "rat2.xlsx") if rateio_file   else None)
+                        # Resolver paths — usar já salvos ou reler uploads
+                        def _resolve(key, file, name):
+                            return paths.get(key) or (save_tmp(file, name) if file else None)
+                        _pos  = _resolve("pos",     posicao_file,  "pos2.csv")
+                        _nf   = _resolve("nf",      nf_file,       "nf2.csv")
+                        _csv  = _resolve("cmv_csv", cmv_csv_file,  "cmv2.csv")
+                        _fat  = _resolve("fat",     fat_file,       "fat2.csv")
+                        _ped  = _resolve("ped",     pedidos_file,  "ped2.xlsx")
+                        _rat  = _resolve("rat",     rateio_file,   "rat2.xlsx")
                         _cart = paths.get("cart") or ([save_tmp(f,f"cart2_{i}.xlsx") for i,f in enumerate(cartoes_files)] if cartoes_files else [])
+                        # Verificar quais obrigatórios estão faltando
+                        _faltando = [n for n,v in [("Posição de Estoque",_pos),("NF Compras",_nf),
+                            ("CMV Gerencial",_csv),("Faturamento Loja",_fat),
+                            ("Faturamento VD",_ped),("Contas a Pagar",_rat)] if not v]
+                        if _faltando:
+                            raise ValueError(f"Arquivos obrigatórios para o FC não carregados: {', '.join(_faltando)}")
                         # Ler mapeamento mais recente do session_state
                         # Reconstruir mapa diretamente das keys glmap_N do session_state
                         # (mais confiável que grupo_linha_usuario que pode estar desatualizado)
