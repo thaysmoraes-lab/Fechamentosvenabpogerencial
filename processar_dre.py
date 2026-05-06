@@ -77,7 +77,14 @@ def _identificar_canal_cmv(cmv_path):
     Lê o CMV mestre e retorna dois sets: {codigos_vd}, {codigos_loja}.
     Busca abas com nome contendo 'VD' ou 'VENDA' e 'LOJA'.
     """
-    wb = load_workbook(cmv_path, read_only=True, data_only=True)
+    # Tentar abrir o CMV (pode ser xlsm)
+    try:
+        wb = load_workbook(cmv_path, read_only=True, data_only=True, keep_vba=False)
+    except Exception:
+        try:
+            wb = load_workbook(cmv_path, read_only=True, data_only=True, keep_vba=True)
+        except Exception as e2:
+            raise ValueError(f"Não foi possível abrir o CMV mestre: {e2}")
     nomes = wb.sheetnames
 
     # Encontrar aba VD
@@ -125,10 +132,50 @@ def _identificar_canal_cmv(cmv_path):
 
 
 def _abrir_dre(dre_path):
-    """Carrega o ValoresDaDRE e retorna (wb, ws, df_preview)."""
-    wb = load_workbook(dre_path)
-    ws = wb.active
-    return wb, ws
+    """
+    Carrega o ValoresDaDRE independente do formato (.xlsx, .xlsm, .xls, .xlsb).
+    Se não conseguir abrir direto, converte via pandas para um xlsx temporário.
+    Retorna (wb openpyxl, ws).
+    """
+    import os, tempfile
+
+    ext = os.path.splitext(str(dre_path))[1].lower()
+
+    # 1. Tentar openpyxl direto (xlsx / xlsm)
+    for kv in (False, True):
+        try:
+            wb = load_workbook(dre_path, keep_vba=kv, data_only=True)
+            return wb, wb.active
+        except Exception:
+            continue
+
+    # 2. Fallback: ler com pandas e recriar workbook em memória
+    engine = None
+    if ext == ".xlsb":
+        engine = "pyxlsb"
+    elif ext == ".xls":
+        engine = "xlrd"
+
+    df_raw = pd.read_excel(dre_path, sheet_name=0, header=None, engine=engine)
+
+    # Recriar como openpyxl Workbook
+    from openpyxl import Workbook as _WB
+    wb2 = _WB()
+    ws2 = wb2.active
+    ws2.title = "ValoresDaDRE"
+    for r_idx, row in enumerate(df_raw.itertuples(index=False), start=1):
+        for c_idx, val in enumerate(row, start=1):
+            # Converter NaN para None
+            cell_val = None if (isinstance(val, float) and pd.isna(val)) else val
+            ws2.cell(row=r_idx, column=c_idx, value=cell_val)
+
+    # Salvar em temp e recarregar para ter comportamento consistente
+    tmp = tempfile.NamedTemporaryFile(suffix=".xlsx", delete=False)
+    tmp.close()
+    wb2.save(tmp.name)
+    wb3 = load_workbook(tmp.name, data_only=True)
+    os.unlink(tmp.name)
+    return wb3, wb3.active
 
 
 def _encontrar_header_row(ws):
