@@ -527,20 +527,30 @@ def run_streamlit():
     atualizar_espelho = st.checkbox("📋 Espelho DFC",             value=False)
     atualizar_dfc = False
     validar_dfc   = False
+
+    st.markdown('<div class="section-title">📝 Lançamentos Manuais (ValoresDaDRE)</div>', unsafe_allow_html=True)
+    lm1, lm2, lm3 = st.columns(3)
+    lanc_vendas = lm1.checkbox("🛍️ Vendas de Mercadorias", value=False)
     st.markdown("---")
 
     # Planilhas Mestres (aparecem só se checkbox ativo)
     cmv_mestre = estoque_mestre = fc_mestre = dfc_mestre = None
+    dre_vendas_mestre = None
     # espelho_dfc não tem mestre — gera novo arquivo
-    if atualizar_cmv or atualizar_estoque or atualizar_fc:
+    if atualizar_cmv or atualizar_estoque or atualizar_fc or lanc_vendas:
         st.markdown('<div class="section-title">📁 Planilhas Mestres</div>', unsafe_allow_html=True)
         mc1,mc2,mc3 = st.columns(3)
         with mc1:
-            if atualizar_cmv or atualizar_espelho:
+            if atualizar_cmv or atualizar_espelho or lanc_vendas:
                 st.markdown('<div class="upload-card"><h4>📊 CMV Mensal (.xlsx)</h4></div>',
                             unsafe_allow_html=True)
                 cmv_mestre = st.file_uploader("CMV Mestre", type=["xlsx"],
                                               label_visibility="collapsed", key="cmv_m")
+            if lanc_vendas:
+                st.markdown('<div class="upload-card"><h4>🛍️ DRE — Vendas de Mercadorias (.xlsx)</h4></div>',
+                            unsafe_allow_html=True)
+                dre_vendas_mestre = st.file_uploader("DRE Vendas", type=["xlsx"],
+                                                      label_visibility="collapsed", key="dre_vend")
         with mc2:
             if atualizar_estoque or atualizar_dfc or atualizar_espelho:
                 st.markdown('<div class="upload-card"><h4>📦 Informativo de Estoque (.xlsx)</h4></div>',
@@ -629,6 +639,10 @@ def run_streamlit():
     if atualizar_fc and not rateio_file:   erros.append("Contas a Pagar")
     if atualizar_fc and not cartoes_files: erros.append("Contas a Receber")
 
+    if lanc_vendas and not dre_vendas_mestre: erros.append("DRE Vendas de Mercadorias")
+    if lanc_vendas and not cmv_mestre:        erros.append("CMV Mestre (para identificar canal VD/Loja)")
+    if lanc_vendas and not fat_file:          erros.append("Faturamento Loja (para Vendas de Mercadorias)")
+    if lanc_vendas and not pedidos_file:      erros.append("Faturamento VD (para Vendas de Mercadorias)")
     if erros: st.info(f"📎 Pendentes: **{', '.join(erros)}**")
     else:      st.success(f"✅ Todos os arquivos prontos para processar **{mes_display}**.")
     st.markdown("---")
@@ -897,6 +911,34 @@ def run_streamlit():
                         st.error(f"❌ Erro no Espelho DFC: {e}")
                         st.stop()
 
+            # ── Lançamento Manual: Vendas de Mercadorias ───────────────────────
+            if lanc_vendas:
+                with st.spinner("⚙️ Lançamento — Vendas de Mercadorias..."):
+                    try:
+                        import sys as _sys2
+                        _dre_dir = os.path.dirname(os.path.abspath(__file__))
+                        if _dre_dir not in _sys2.path: _sys2.path.insert(0, _dre_dir)
+                        import processar_dre as _pdre; import importlib; importlib.reload(_pdre)
+                        out_dre_v = os.path.join(tmpdir, "dre_vendas_out.xlsx")
+                        _dre_v_path  = save_tmp(dre_vendas_mestre, "dre_vendas_m.xlsx")
+                        _cmv_dre     = paths.get("cmv_saved") or save_tmp(cmv_mestre, "cmv_dre.xlsx")
+                        _fat_dre     = paths.get("fat") or save_tmp(fat_file, "fat_dre.csv")
+                        _ped_dre     = paths.get("ped") or save_tmp(pedidos_file, "ped_dre.xlsx")
+                        rep_dre_v = _pdre.atualizar_vendas_mercadorias(
+                            dre_path       = _dre_v_path,
+                            fat_lojas_path = _fat_dre,
+                            fat_vd_path    = _ped_dre,
+                            cmv_path       = _cmv_dre,
+                            mes_display    = mes_display,
+                            ano            = 2026,
+                            output_path    = out_dre_v,
+                        )
+                        with open(out_dre_v, "rb") as f:
+                            st.session_state["resultados"]["dre_vendas"] = (f.read(), rep_dre_v)
+                    except Exception as e:
+                        st.error(f"❌ Erro em Vendas de Mercadorias: {e}")
+                        st.stop()
+
             if atualizar_dfc:
                 with st.spinner("⚙️ DFC..."):
                     import sys
@@ -990,6 +1032,15 @@ def run_streamlit():
                     file_name=f"DFC_VENA_2026_{mes_processado.upper()}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="dl_dfc")
+        if "dre_vendas" in resultados:
+            st.download_button(
+                "⬇️ DRE — Vendas de Mercadorias",
+                data=resultados["dre_vendas"][0],
+                file_name=f"DRE_VENDAS_{mes_processado.upper()}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl_dre_vendas",
+            )
+
         dc4, dc5 = st.columns(2) if "fc" in resultados else (st.columns(1)[0], None)
         with dc4:
             if "fc" in resultados:
@@ -1003,6 +1054,21 @@ def run_streamlit():
 
         st.markdown('<div class="section-title">📊 Relatório de Processamento</div>',
                     unsafe_allow_html=True)
+
+        if "dre_vendas" in resultados:
+            rep_dv = resultados["dre_vendas"][1]
+            with st.expander("🛍️ DRE Vendas de Mercadorias — Detalhes"):
+                c1, c2 = st.columns(2)
+                c1.metric("✅ Lojas atualizadas", len(rep_dv.get("atualizadas", [])))
+                c2.metric("⚠️ Não encontradas",  len(rep_dv.get("nao_encontradas", [])))
+                if rep_dv.get("atualizadas"):
+                    st.markdown("**Lançamentos realizados:**")
+                    for item in rep_dv["atualizadas"]:
+                        st.markdown(f"- {item}")
+                if rep_dv.get("nao_encontradas"):
+                    st.warning("Lojas sem valor nas bases:")
+                    for item in rep_dv["nao_encontradas"]:
+                        st.markdown(f"- {item}")
 
         if "cmv" in resultados:
             rep = resultados["cmv"][1]
