@@ -63,13 +63,50 @@ def _carregar_fat_lojas(fat_path):
 
 def _carregar_fat_vd(vd_path):
     """
-    Carrega o ConsultaPedidos XLSX e retorna dict {cod_loja: soma_ValorPedido}.
-    Código extraído de EstruturaPai.
+    Carrega o Faturamento VD e retorna dict {cod_loja: soma_ValorPedido}.
+    Suporta dois formatos:
+      1. Arquivo completo de pedidos (com colunas EstruturaPai e ValorPedido)
+      2. Tabela dinâmica resumida (col A = nome com código, col B = soma)
     """
     df = pd.read_excel(vd_path)
-    df["_cod"] = df["EstruturaPai"].astype(str).str.extract(r"^(\d+)")[0].str.strip()
-    soma = df.groupby("_cod")["ValorPedido"].sum()
-    return soma.to_dict()
+
+    # Formato 1: arquivo completo com ValorPedido
+    if "ValorPedido" in df.columns:
+        # Prioridade: CanalDistribuicao (sempre preenchido) → EstruturaPai → CodCD fallback
+        col_id = None
+        for c in ("CanalDistribuicao", "EstruturaPai"):
+            if c in df.columns and df[c].notna().any():
+                col_id = c
+                break
+
+        if col_id:
+            df["_cod"] = df[col_id].astype(str).str.extract(r"^(\d+)")[0].str.strip()
+        else:
+            df["_cod"] = None
+
+        soma = df[df["_cod"].notna()].groupby("_cod")["ValorPedido"].sum()
+        return soma.to_dict()
+
+    # Formato 2: tabela dinâmica resumida (sem header ou header diferente)
+    # Ler sem header para detectar estrutura
+    df_raw = pd.read_excel(vd_path, header=None)
+    resultado = {}
+    for _, row in df_raw.iterrows():
+        cel = str(row.iloc[0] if not pd.isna(row.iloc[0]) else "")
+        m = re.match(r"^(\d{4,6})", cel.strip())
+        if m:
+            try:
+                val = float(str(row.iloc[1]).replace(",", "."))
+                resultado[m.group(1)] = val
+            except (ValueError, IndexError):
+                continue
+    if resultado:
+        return resultado
+
+    raise ValueError(
+        "Formato do arquivo Faturamento VD não reconhecido. "
+        "Envie o arquivo de pedidos completo ou a tabela dinâmica com código e soma por loja."
+    )
 
 
 def _identificar_canal_cmv(cmv_path):
