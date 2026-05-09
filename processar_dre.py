@@ -112,61 +112,53 @@ def _carregar_fat_vd(vd_path):
 def _identificar_canal_cmv(cmv_path):
     """
     Lê o CMV mestre e retorna dois sets: {codigos_vd}, {codigos_loja}.
-    Busca abas com nome contendo 'VD' ou 'VENDA' e 'LOJA'.
+    Usa pandas como base para suportar .xlsx, .xlsm e .xlsb.
     """
-    # Tentar abrir o CMV (pode ser xlsm)
-    try:
-        wb = load_workbook(cmv_path, read_only=True, data_only=True, keep_vba=False)
-    except Exception:
-        try:
-            wb = load_workbook(cmv_path, read_only=True, data_only=True, keep_vba=True)
-        except Exception as e2:
-            raise ValueError(f"Não foi possível abrir o CMV mestre: {e2}")
-    nomes = wb.sheetnames
+    import os
 
-    # Encontrar aba VD
-    aba_vd = None
-    for n in nomes:
-        if re.search(r"venda\s*direta|^vd$", n, re.IGNORECASE):
-            aba_vd = n
-            break
-
-    # Encontrar aba LOJAS
-    aba_lojas = None
-    for n in nomes:
-        if re.search(r"loja", n, re.IGNORECASE) and n != aba_vd:
-            aba_lojas = n
-            break
-
-    codigos_vd    = set()
-    codigos_loja  = set()
-
-    def _extrair_codigos_aba(ws):
+    def _extrair_cods_df(df):
         cods = set()
-        for row in ws.iter_rows(min_row=1, values_only=True):
-            for cell in row:
-                m = re.match(r"^\s*(\d{4,6})\b", str(cell or ""))
-                if m:
-                    cods.add(m.group(1))
-            break  # só primeira linha com dados relevantes? Na verdade vamos varrer tudo
-        # Varrer coluna A
-        for row in ws.iter_rows(min_col=1, max_col=2, values_only=True):
-            for cell in row:
-                m = re.match(r"^\s*(\d{4,6})\b", str(cell or ""))
+        for col in df.columns[:2]:
+            for val in df[col].dropna().astype(str):
+                m = re.match(r"^\s*(\d{4,6})\b", val.strip())
                 if m:
                     cods.add(m.group(1))
         return cods
 
+    ext = os.path.splitext(str(cmv_path))[1].lower()
+    engine = "pyxlsb" if ext == ".xlsb" else "openpyxl"
+
+    try:
+        xl = pd.ExcelFile(cmv_path, engine=engine)
+        nomes = xl.sheet_names
+    except Exception:
+        try:
+            xl = pd.ExcelFile(cmv_path, engine="xlrd")
+            nomes = xl.sheet_names
+        except Exception as e:
+            raise ValueError(f"Não foi possível abrir o CMV mestre: {e}")
+
+    aba_vd    = next((n for n in nomes if re.search(r"venda.?direta|^vd$", n, re.IGNORECASE)), None)
+    aba_lojas = next((n for n in nomes if re.search(r"loja", n, re.IGNORECASE) and n != aba_vd), None)
+
+    codigos_vd   = set()
+    codigos_loja = set()
+
     if aba_vd:
-        ws = wb[aba_vd]
-        codigos_vd = _extrair_codigos_aba(ws)
+        try:
+            df = xl.parse(aba_vd, header=None, nrows=200)
+            codigos_vd = _extrair_cods_df(df)
+        except Exception:
+            pass
+
     if aba_lojas:
-        ws = wb[aba_lojas]
-        codigos_loja = _extrair_codigos_aba(ws)
+        try:
+            df = xl.parse(aba_lojas, header=None, nrows=200)
+            codigos_loja = _extrair_cods_df(df)
+        except Exception:
+            pass
 
-    wb.close()
     return codigos_vd, codigos_loja
-
 
 def _abrir_dre(dre_path):
     """
