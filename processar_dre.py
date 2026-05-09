@@ -422,3 +422,155 @@ def atualizar_cmv(
     wb.save(out)
     wb.close()
     return relatorio
+
+
+# ── Função principal: TRF/REM ─────────────────────────────────────────────────
+
+def atualizar_trf_rem(
+    dre_path: str,
+    cmv_csv_path: str,
+    mes_display: str,
+    ano: int = 2026,
+    output_path: str = None
+) -> dict:
+    """
+    Atualiza o ValoresDaDRE de TRF/REM:
+      - Col D (Competência) = primeiro dia do mês selecionado
+      - Col E (Valor)       = Valor TRF REM (col K, índice 10 do CMV Gerencial CSV)
+                              identificado pelo código numérico da Col C
+    """
+    data_competencia = _mes_para_data(mes_display, ano)
+
+    # Reutiliza a função de CMV mas lendo col K (índice 10) em vez de J (índice 9)
+    for enc in ("latin1", "utf-8", "cp1252"):
+        try:
+            df = pd.read_csv(cmv_csv_path, sep=None, engine="python", encoding=enc)
+            break
+        except Exception:
+            continue
+
+    col_loja = df.columns[0]
+    col_trf  = df.columns[10]  # Coluna K = Valor TRF REM
+
+    df["_cod"] = df[col_loja].astype(str).str.extract(r"^(\d+)")[0].str.strip()
+    df["_val"] = df[col_trf].apply(_br_to_float)
+    map_trf = dict(zip(df["_cod"], df["_val"]))
+
+    wb, ws = _abrir_dre(dre_path)
+    header_row = _encontrar_header_row(ws)
+    cols = _get_col_indices(ws, header_row)
+
+    relatorio = {
+        "atualizadas":     [],
+        "nao_encontradas": [],
+        "sem_codigo":      [],
+    }
+
+    for row_idx in range(header_row + 1, ws.max_row + 1):
+        centro_val = ws.cell(row=row_idx, column=cols["centro"]).value
+        if not centro_val:
+            continue
+
+        cod = _extrair_codigo(str(centro_val))
+        if not cod:
+            relatorio["sem_codigo"].append(str(centro_val))
+            continue
+
+        valor = map_trf.get(cod)
+        if valor is None:
+            relatorio["nao_encontradas"].append(f"{cod} (centro: {centro_val})")
+            continue
+
+        ws.cell(row=row_idx, column=cols["competencia"]).value = data_competencia
+        ws.cell(row=row_idx, column=cols["valor"]).value       = round(valor, 2)
+
+        relatorio["atualizadas"].append(
+            f"{cod} → R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        )
+
+    out = output_path or dre_path
+    wb.save(out)
+    wb.close()
+    return relatorio
+
+
+# ── Helper: Relatório Sintético de NF Venda ───────────────────────────────────
+
+def _carregar_nf_venda_por_cfop(nf_path, cfops: list) -> dict:
+    """
+    Lê o relatorioSinteticoDeNotasFiscaisVenda e retorna {cod_loja: soma_valor}
+    filtrando pelos CFOPs informados.
+    """
+    for enc in ("latin1", "utf-8", "cp1252"):
+        try:
+            df = pd.read_csv(nf_path, sep=None, engine="python", encoding=enc)
+            break
+        except Exception:
+            continue
+
+    df["_cod"] = df["Loja"].astype(str).str.extract(r"^(\d+)")[0].str.strip()
+    df["_val"] = df["Valor"].apply(_br_to_float)
+
+    sub = df[df["CFOP"].isin(cfops)]
+    soma = sub.groupby("_cod")["_val"].sum()
+    return soma.to_dict()
+
+
+def _atualizar_dre_generico(dre_path, map_valores, mes_display, ano, output_path) -> dict:
+    """
+    Função genérica que atualiza Col D (Competência) e Col E (Valor)
+    de qualquer ValoresDaDRE usando o map {cod: valor}.
+    """
+    data_competencia = _mes_para_data(mes_display, ano)
+
+    wb, ws = _abrir_dre(dre_path)
+    header_row = _encontrar_header_row(ws)
+    cols = _get_col_indices(ws, header_row)
+
+    relatorio = {"atualizadas": [], "nao_encontradas": [], "sem_codigo": []}
+
+    for row_idx in range(header_row + 1, ws.max_row + 1):
+        centro_val = ws.cell(row=row_idx, column=cols["centro"]).value
+        if not centro_val:
+            continue
+
+        cod = _extrair_codigo(str(centro_val))
+        if not cod:
+            relatorio["sem_codigo"].append(str(centro_val))
+            continue
+
+        valor = map_valores.get(cod)
+        if valor is None:
+            relatorio["nao_encontradas"].append(f"{cod} (centro: {centro_val})")
+            continue
+
+        ws.cell(row=row_idx, column=cols["competencia"]).value = data_competencia
+        ws.cell(row=row_idx, column=cols["valor"]).value       = round(valor, 2)
+        relatorio["atualizadas"].append(
+            f"{cod} → R$ {valor:,.2f}".replace(",","X").replace(".",",").replace("X",".")
+        )
+
+    out = output_path or dre_path
+    wb.save(out)
+    wb.close()
+    return relatorio
+
+
+# ── Funções públicas: Perdas, Demo, Brindes ───────────────────────────────────
+
+def atualizar_perdas_estoque(dre_path, nf_path, mes_display, ano=2026, output_path=None):
+    """CFOP 5927 → Perdas de Estoque"""
+    map_v = _carregar_nf_venda_por_cfop(nf_path, [5927])
+    return _atualizar_dre_generico(dre_path, map_v, mes_display, ano, output_path)
+
+
+def atualizar_mercadorias_demo(dre_path, nf_path, mes_display, ano=2026, output_path=None):
+    """CFOP 5949 / 6949 → Mercadorias para Demonstração"""
+    map_v = _carregar_nf_venda_por_cfop(nf_path, [5949, 6949])
+    return _atualizar_dre_generico(dre_path, map_v, mes_display, ano, output_path)
+
+
+def atualizar_brindes_incentivos(dre_path, nf_path, mes_display, ano=2026, output_path=None):
+    """CFOP 5910 / 6910 → Brindes / Incentivos"""
+    map_v = _carregar_nf_venda_por_cfop(nf_path, [5910, 6910])
+    return _atualizar_dre_generico(dre_path, map_v, mes_display, ano, output_path)
