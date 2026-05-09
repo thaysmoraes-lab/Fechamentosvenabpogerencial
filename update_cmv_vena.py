@@ -582,7 +582,7 @@ def run_streamlit():
                         unsafe_allow_html=True)
             posicao_file = st.file_uploader("Posição", type=["csv"],
                                              label_visibility="collapsed", key="pos")
-        if atualizar_cmv or atualizar_estoque:
+        if atualizar_cmv or atualizar_estoque or lanc_cmv:
             st.markdown('<div class="upload-card"><h4>📉 CMV Gerencial (CSV)</h4></div>',
                         unsafe_allow_html=True)
             cmv_csv_file = st.file_uploader("CMV CSV", type=["csv"],
@@ -640,6 +640,8 @@ def run_streamlit():
     if atualizar_fc and not cartoes_files: erros.append("Contas a Receber")
 
     if lanc_vendas and not dre_vendas_mestre: erros.append("DRE Vendas de Mercadorias")
+    if lanc_cmv    and not dre_cmv_mestre:    erros.append("DRE CMV")
+    if lanc_cmv    and not cmv_csv_file:       erros.append("CMV Gerencial CSV (para CMV)")
     if lanc_vendas and not cmv_mestre:        erros.append("CMV Mestre (para identificar canal VD/Loja)")
     if lanc_vendas and not fat_file:          erros.append("Faturamento Loja (para Vendas de Mercadorias)")
     if lanc_vendas and not pedidos_file:      erros.append("Faturamento VD (para Vendas de Mercadorias)")
@@ -939,6 +941,30 @@ def run_streamlit():
                         st.error(f"❌ Erro em Vendas de Mercadorias: {e}")
                         st.stop()
 
+            # ── Lançamento Manual: CMV ───────────────────────────────────────
+            if lanc_cmv:
+                with st.spinner("⚙️ Lançamento — CMV..."):
+                    try:
+                        import sys as _sys3
+                        _dre_dir3 = os.path.dirname(os.path.abspath(__file__))
+                        if _dre_dir3 not in _sys3.path: _sys3.path.insert(0, _dre_dir3)
+                        import processar_dre as _pdre3; import importlib; importlib.reload(_pdre3)
+                        out_dre_cmv   = os.path.join(tmpdir, "dre_cmv_out.xlsx")
+                        _dre_cmv_path = save_tmp(dre_cmv_mestre, "dre_cmv_m.xlsx")
+                        _cmv_csv      = paths.get("cmv_csv") or save_tmp(cmv_csv_file, "cmv_dre.csv")
+                        rep_dre_cmv = _pdre3.atualizar_cmv(
+                            dre_path     = _dre_cmv_path,
+                            cmv_csv_path = _cmv_csv,
+                            mes_display  = mes_display,
+                            ano          = 2026,
+                            output_path  = out_dre_cmv,
+                        )
+                        with open(out_dre_cmv, "rb") as f:
+                            st.session_state["resultados"]["dre_cmv"] = (f.read(), rep_dre_cmv)
+                    except Exception as e:
+                        st.error(f"❌ Erro em CMV: {e}")
+                        st.stop()
+
             if atualizar_dfc:
                 with st.spinner("⚙️ DFC..."):
                     import sys
@@ -1032,6 +1058,15 @@ def run_streamlit():
                     file_name=f"DFC_VENA_2026_{mes_processado.upper()}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="dl_dfc")
+        if "dre_cmv" in resultados:
+            st.download_button(
+                "⬇️ DRE — CMV",
+                data=resultados["dre_cmv"][0],
+                file_name=f"DRE_CMV_{mes_processado.upper()}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl_dre_cmv",
+            )
+
         if "dre_vendas" in resultados:
             st.download_button(
                 "⬇️ DRE — Vendas de Mercadorias",
@@ -1054,6 +1089,21 @@ def run_streamlit():
 
         st.markdown('<div class="section-title">📊 Relatório de Processamento</div>',
                     unsafe_allow_html=True)
+
+        if "dre_cmv" in resultados:
+            rep_dc = resultados["dre_cmv"][1]
+            with st.expander("📉 DRE CMV — Detalhes"):
+                c1, c2 = st.columns(2)
+                c1.metric("✅ Lojas atualizadas", len(rep_dc.get("atualizadas", [])))
+                c2.metric("⚠️ Não encontradas",  len(rep_dc.get("nao_encontradas", [])))
+                if rep_dc.get("atualizadas"):
+                    st.markdown("**Lançamentos realizados:**")
+                    for item in rep_dc["atualizadas"]:
+                        st.markdown(f"- {item}")
+                if rep_dc.get("nao_encontradas"):
+                    st.warning("Lojas sem valor no CMV Gerencial:")
+                    for item in rep_dc["nao_encontradas"]:
+                        st.markdown(f"- {item}")
 
         if "dre_vendas" in resultados:
             rep_dv = resultados["dre_vendas"][1]
