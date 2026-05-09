@@ -343,3 +343,82 @@ def atualizar_vendas_mercadorias(
     wb.close()
 
     return relatorio
+
+
+# ── Função principal: CMV ─────────────────────────────────────────────────────
+
+def _carregar_cmv_gerencial(cmv_csv_path):
+    """
+    Carrega o relatório CMV Gerencial CSV e retorna dict {cod_loja: cmv_gerencial}.
+    Coluna A = loja (ex: '13732 - RIC...'), Coluna J (índice 9) = CMV Gerencial.
+    Usa apenas o prefixo numérico antes do nome para o match.
+    """
+    for enc in ("latin1", "utf-8", "cp1252"):
+        try:
+            df = pd.read_csv(cmv_csv_path, sep=None, engine="python", encoding=enc)
+            break
+        except Exception:
+            continue
+
+    col_loja = df.columns[0]
+    col_cmv  = df.columns[9]  # Coluna J
+
+    # Extrair código numérico antes do traço
+    df["_cod"] = df[col_loja].astype(str).str.extract(r"^(\d+)")[0].str.strip()
+    df["_cmv"] = df[col_cmv].apply(_br_to_float)
+
+    return dict(zip(df["_cod"], df["_cmv"]))
+
+
+def atualizar_cmv(
+    dre_path: str,
+    cmv_csv_path: str,
+    mes_display: str,
+    ano: int = 2026,
+    output_path: str = None
+) -> dict:
+    """
+    Atualiza o ValoresDaDRE de Custo da Mercadoria Vendida - CMV:
+      - Col D (Competência) = primeiro dia do mês selecionado
+      - Col E (Valor)       = CMV Gerencial (col J do relatório CMV)
+                              identificado pelo código numérico da Col C
+    """
+    data_competencia = _mes_para_data(mes_display, ano)
+    map_cmv = _carregar_cmv_gerencial(cmv_csv_path)
+
+    wb, ws = _abrir_dre(dre_path)
+    header_row = _encontrar_header_row(ws)
+    cols = _get_col_indices(ws, header_row)
+
+    relatorio = {
+        "atualizadas":     [],
+        "nao_encontradas": [],
+        "sem_codigo":      [],
+    }
+
+    for row_idx in range(header_row + 1, ws.max_row + 1):
+        centro_val = ws.cell(row=row_idx, column=cols["centro"]).value
+        if not centro_val:
+            continue
+
+        cod = _extrair_codigo(str(centro_val))
+        if not cod:
+            relatorio["sem_codigo"].append(str(centro_val))
+            continue
+
+        valor = map_cmv.get(cod)
+        if valor is None:
+            relatorio["nao_encontradas"].append(f"{cod} (centro: {centro_val})")
+            continue
+
+        ws.cell(row=row_idx, column=cols["competencia"]).value = data_competencia
+        ws.cell(row=row_idx, column=cols["valor"]).value       = round(valor, 2)
+
+        relatorio["atualizadas"].append(
+            f"{cod} → R$ {valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        )
+
+    out = output_path or dre_path
+    wb.save(out)
+    wb.close()
+    return relatorio
